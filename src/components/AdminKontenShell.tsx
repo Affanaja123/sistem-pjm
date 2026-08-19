@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useRouterState, Outlet, useNavigate } from "@tanstack/react-router";
 import {
   ChevronDown, ChevronRight, Home, Info, FileText, BarChart3,
@@ -34,39 +34,83 @@ const iconMap: Record<string, any> = {
 };
 
 // Filter menu sidebar berdasarkan hak akses user (mendukung menu baru secara akurat)
+// Filter menu sidebar berdasarkan hak akses user secara akurat
+// Filter menu sidebar berdasarkan hak akses user (aman & sub-menu tetap normal)
+// Filter menu sidebar berdasarkan hak akses user (aman untuk tipe data angka/string & sub-menu normal)
 const getFilteredNavItems = (menus: any[], hakAkses: string | undefined | null) => {
   if (hakAkses && hakAkses.toLowerCase().includes("admin_super")) return menus;
 
   const userAccessList = hakAkses ? hakAkses.toLowerCase().split(",").map(s => s.trim()).filter(Boolean) : [];
+  if (userAccessList.length === 0) return [];
 
-  return menus.filter((item) => {
-    const labelClean = (item.label || "").trim().toLowerCase();
-    const menuId = labelClean.replace(/\s+/g, '-');
-
-    if (userAccessList.length === 0) return false;
-
-    // Cek apakah ID menu (DB ID), slug, atau label menu ada di dalam daftar hak akses user
+  // Fungsi helper: cek apakah satu item diizinkan berdasarkan daftar hak akses
+  const isItemAllowed = (id: string, label: string, route: string) => {
+    const idClean = String(id || "").trim();
+    const labelClean = (label || "").trim().toLowerCase();
+    const routeClean = (route || "").toLowerCase();
     return userAccessList.some(access => {
       const cleanAccess = access.trim();
+      // Cocokkan berdasarkan ID (angka), label kata, atau segmen route
+      // Hindari pencocokan parsial angka dalam string label/route
+      const isNumeric = /^\d+$/.test(cleanAccess);
+      if (isNumeric) {
+        // Jika hak akses berupa angka, hanya cocokkan dengan ID
+        return idClean === cleanAccess;
+      }
       return (
-        String(item.id) === cleanAccess ||
-        menuId === cleanAccess ||
+        idClean === cleanAccess ||
         labelClean.includes(cleanAccess) ||
-        (item.route && item.route.toLowerCase().includes(cleanAccess))
+        routeClean.includes(cleanAccess)
       );
     });
-  });
+  };
+
+  const result: any[] = [];
+
+  for (const item of menus) {
+    const menuId = String(item.id || "").trim();
+    const labelClean = (item.label || "").trim().toLowerCase();
+    const itemRoute = (item.route || item.to || "").toLowerCase();
+
+    // 1. Sembunyikan mutlak menu BERANDA jika user tidak punya hak aksesnya
+    const isBeranda = labelClean.includes("beranda") || itemRoute.includes("beranda") || menuId === "1";
+    if (isBeranda) {
+      const hasBerandaAccess = userAccessList.some(access => access === "1" || access.includes("beranda"));
+      if (!hasBerandaAccess) continue;
+    }
+
+    // 2. Cek apakah menu utama diizinkan
+    const isMainAllowed = isItemAllowed(menuId, item.label, item.route || item.to || "");
+
+    // 3. Jika memiliki sub-menu, saring dengan IMMUTABLE (tidak mutasi data asli)
+    if (item.subItems && Array.isArray(item.subItems)) {
+      const filteredSubItems = item.subItems.filter((sub: any) => {
+        const subId = String(sub.id || "").trim();
+        // Sub-menu diizinkan jika: sub itu sendiri diizinkan ATAU parent-nya diizinkan
+        return isMainAllowed || isItemAllowed(subId, sub.label, sub.to || "");
+      });
+
+      // Tampilkan menu utama jika dia sendiri diizinkan ATAU memiliki sub-menu yang lolos filter
+      if (isMainAllowed || filteredSubItems.length > 0) {
+        // ✅ Buat objek BARU — tidak mutasi item asli dari state
+        result.push({ ...item, subItems: filteredSubItems });
+      }
+      continue;
+    }
+
+    if (isMainAllowed) {
+      result.push(item);
+    }
+  }
+
+  return result;
 };
 
 // Validasi apakah pathname saat ini diizinkan untuk diakses oleh user
+// Validasi apakah pathname saat ini diizinkan untuk diakses oleh user (DIAMANKAN)
 const isPathnameAllowed = (pathname: string, hakAkses: string | undefined | null, menus: any[] = []) => {
-  // Halaman umum admin selalu diizinkan untuk semua admin yang valid
-  if (
-    pathname === "/admin-konten" ||
-    pathname === "/admin-konten/beranda" ||
-    pathname === "/admin-konten/pengaturan" ||
-    pathname === "/admin-konten/kelola-menu"
-  ) {
+  // Hanya halaman pengaturan dasar universal yang bebas diakses
+  if (pathname === "/admin-konten" || pathname === "/admin-konten/pengaturan") {
     return true;
   }
 
@@ -77,19 +121,32 @@ const isPathnameAllowed = (pathname: string, hakAkses: string | undefined | null
   if (isSuper) return true;
 
   const cleanPath = pathname.toLowerCase();
-  const userAccessList = hakAkses.toLowerCase().split(",").map(s => s.trim());
 
-  // 1. Cek apakah ada menu dalam list menus yang jalurnya cocok dengan pathname saat ini dan diizinkan
+  // Ambil daftar menu yang IZINKAN untuk user ini berdasarkan hak_akses mereka (misal: "2")
   const allowedMenus = getFilteredNavItems(menus, hakAkses);
+
   const isAllowed = allowedMenus.some(menu => {
     // Check main route
-    const mainRoute = (menu.to || "").toLowerCase().trim();
+    const mainRoute = normalizeAdminRoute(menu.to || "").toLowerCase().trim();
     if (mainRoute && (cleanPath === mainRoute || cleanPath.startsWith(mainRoute + "/"))) return true;
+
+    // Tambahan: Jika route utamanya /admin-konten/beranda (atau sejenisnya), 
+    // izinkan juga sub-fitur detail layanan mutunya
+    if (mainRoute.includes("beranda")) {
+      const berandaSubPaths = [
+        "/admin-konten/pelaporan",
+        "/admin-konten/sistem-informasi",
+        "/admin-konten/konsultasi-mutu"
+      ];
+      if (berandaSubPaths.some(p => cleanPath === p || cleanPath.startsWith(p + "/"))) {
+        return true;
+      }
+    }
 
     // Check sub items
     if (menu.subItems && Array.isArray(menu.subItems)) {
       return menu.subItems.some((sub: any) => {
-        const subRoute = (sub.to || "").toLowerCase().trim();
+        const subRoute = normalizeAdminRoute(sub.to || "").toLowerCase().trim();
         return subRoute && (cleanPath === subRoute || cleanPath.startsWith(subRoute + "/"));
       });
     }
@@ -98,10 +155,23 @@ const isPathnameAllowed = (pathname: string, hakAkses: string | undefined | null
 
   if (isAllowed) return true;
 
-  // 2. Fallback pencocokan manual menggunakan teks hak akses (untuk backward compatibility)
+  // Fallback pencocokan manual string hak_akses (untuk backward compatibility)
+  const userAccessList = hakAkses.toLowerCase().split(",").map(s => s.trim());
   return userAccessList.some(access => {
     const cleanAccess = access.trim();
     if (!cleanAccess) return false;
+
+    // Jika user punya hak akses "beranda" atau "1", izinkan juga detail layanan mutunya
+    if (cleanAccess === "1" || cleanAccess === "beranda") {
+      const berandaSubPaths = [
+        "/admin-konten/pelaporan",
+        "/admin-konten/sistem-informasi",
+        "/admin-konten/konsultasi-mutu"
+      ];
+      if (berandaSubPaths.some(p => cleanPath === p || cleanPath.startsWith(p + "/"))) {
+        return true;
+      }
+    }
 
     if (cleanPath.includes(cleanAccess)) return true;
     if (cleanPath.startsWith(`/admin-konten/${cleanAccess}`)) return true;
@@ -118,6 +188,9 @@ const handleLogout = async () => {
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [navItems, setNavItems] = useState<any[]>([]);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  // Ref untuk mencegah auto-open menimpa pilihan user setelah data pertama kali dimuat
+  const hasAutoOpened = useRef(false);
 
   const user: any = getCurrentUser();
 
@@ -135,13 +208,22 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
   const filteredItems = getFilteredNavItems(navItems, user?.hak_akses);
 
-  const [openMenu, setOpenMenu] = useState<string | null>(() => {
-    const activeItem = filteredItems.find(item =>
-      item.subItems?.some((sub: any) => pathname.startsWith(sub.to))
-    );
-    return activeItem ? activeItem.label : null;
-  });
+  // ✅ FIX UTAMA: Auto-open hanya SEKALI setelah data menu pertama kali tersedia.
+  // Menggunakan ref agar tidak pernah reset saat user manual toggle.
+  useEffect(() => {
+    if (filteredItems.length === 0 || hasAutoOpened.current) return;
+    hasAutoOpened.current = true;
 
+    const activeItem = filteredItems.find(item =>
+      item.subItems?.some((sub: any) =>
+        pathname.startsWith(normalizeAdminRoute(sub.to))
+      )
+    );
+    // Jika ada sub-menu aktif → buka, jika tidak → biarkan semua tertutup
+    setOpenMenu(activeItem ? activeItem.label : null);
+  }, [filteredItems]); // hanya bereaksi saat filteredItems berubah (saat data datang)
+
+  // ✅ Toggle langsung & responsif — tidak pernah di-override oleh useEffect manapun
   const toggleMenu = (label: string) => {
     setOpenMenu(prev => (prev === label ? null : label));
   };
@@ -181,8 +263,15 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                     </div>
                     {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                   </button>
-                  {isOpen && (
-                    <div className="ml-4 mt-1 space-y-1 border-l border-sidebar-border/50 pl-2">
+                  {/* ✅ Animasi accordion CSS — tidak glitch, responsif saat diklik */}
+                  <div
+                    style={{
+                      maxHeight: isOpen ? `${item.subItems.length * 44}px` : "0px",
+                      overflow: "hidden",
+                      transition: "max-height 0.25s ease",
+                    }}
+                  >
+                    <div className="ml-4 mt-1 space-y-1 border-l border-sidebar-border/50 pl-2 pb-1">
                       {item.subItems.map((sub: any) => {
                         const normalizedTo = normalizeAdminRoute(sub.to);
                         return (
@@ -191,8 +280,10 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                             to={normalizedTo as any}
                             onClick={onNavigate}
                             className={cn(
-                              "block rounded-lg px-3 py-2 text-xs font-medium transition-all",
-                              pathname === normalizedTo ? "bg-sidebar-primary text-white" : "text-sidebar-foreground/70 hover:text-white"
+                              "block rounded-lg px-3 py-2 text-xs font-medium transition-all duration-150",
+                              pathname === normalizedTo
+                                ? "bg-sidebar-primary text-white shadow-sm"
+                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-white"
                             )}
                           >
                             {sub.label}
@@ -200,7 +291,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                         );
                       })}
                     </div>
-                  )}
+                  </div>
                 </>
               ) : (
                 <Link
@@ -270,18 +361,27 @@ export function AdminKontenShell() {
     }
 
     const checkAccess = (finalUser: any, menus: any[]) => {
-      // Beranda selalu boleh diakses oleh semua admin yang terautentikasi
-      if (
-        pathname === "/admin-konten" ||
-        pathname === "/admin-konten/beranda" ||
-        pathname === "/admin-konten/pengaturan"
-      ) {
+      // Halaman root dan pengaturan universal
+      if (pathname === "/admin-konten" || pathname === "/admin-konten/pengaturan") {
         setIsChecking(false);
         return;
       }
 
+      // Jika path saat ini tidak diizinkan untuk hak_akses "2" milik Athar
       if (!isPathnameAllowed(pathname, finalUser?.hak_akses, menus)) {
-        navigate({ to: "/admin-konten/beranda", replace: true });
+        // Cari menu sah pertama milik user (berdasarkan hak_akses "2" / Tentang)
+        const allowedMenus = getFilteredNavItems(menus, finalUser?.hak_akses);
+        let fallbackRoute = "/admin-konten/pengaturan";
+
+        if (allowedMenus.length > 0) {
+          const firstMenu = allowedMenus[0];
+          fallbackRoute = normalizeAdminRoute(
+            firstMenu.to || (firstMenu.subItems && firstMenu.subItems[0]?.to) || "/admin-konten/pengaturan"
+          );
+        }
+
+        // Alihkan Athar langsung ke halaman Tentang miliknya, bukan ke Beranda!
+        navigate({ to: fallbackRoute as any, replace: true });
       } else {
         setIsChecking(false);
       }

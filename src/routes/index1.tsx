@@ -36,35 +36,58 @@ function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<"login" | "register">("login");
   const [regForm, setRegForm] = useState({
+
     nama: "",
     email: "",
     password: "",
   });
 
-  // Ganti fungsi lama dengan ini:
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError("");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/register.php`, {
+      const generatedUsername = regForm.email.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      const payload = {
+        username: generatedUsername,
+        nama: regForm.nama,
+        email: regForm.email,
+        password: regForm.password,
+        hak_akses: "" 
+      };
+
+      // Arahkan langsung ke endpoint /api/register sesuai backend controller Anda
+      const targetUrl = `${API_BASE_URL}/api/register`;
+      console.log("Mencoba kirim ke URL:", targetUrl);
+
+      const response = await fetch(targetUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(regForm),
+        body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
+      const textResponse = await response.text();
+      console.log("Raw response dari server:", textResponse);
 
-      if (data.success) {
-        toast.success("Pendaftaran berhasil! Silakan hubungi Admin Super untuk aktivasi.");
+      let data;
+      try {
+        data = JSON.parse(textResponse);
+      } catch (parseErr) {
+        throw new Error("Server mengembalikan bukan format JSON: " + textResponse);
+      }
+
+      if (response.ok && (data.success || data.status === 'success')) {
+        toast.success("Pendaftaran berhasil! Silakan masuk.");
         setMode("login");
         setRegForm({ nama: "", email: "", password: "" });
       } else {
-        setError(data.error || "Pendaftaran gagal.");
+        setError(data.error || data.message || "Pendaftaran gagal.");
       }
-    } catch (err) {
-      setError("Gagal terhubung ke server.");
+    } catch (err: any) {
+      console.error("Detail error register:", err);
+      setError(err.message || "Gagal terhubung ke server.");
     } finally {
       setIsLoading(false);
     }
@@ -78,8 +101,13 @@ function LoginPage() {
     const result = await login(email, password);
 
     if (result.success && result.user) {
-      // Redirect ke halaman admin konten
-      navigate({ to: "/admin-konten/beranda" as any });
+      // Cek hak akses: Jika user biasa, arahkan ke pengaturan, jika bukan ke beranda
+      const userRole = result.user.hak_akses || result.user.role;
+      if (userRole === "user_biasa" || userRole === "user") {
+        navigate({ to: "/admin-konten/pengaturan" as any });
+      } else {
+        navigate({ to: "/admin-konten/beranda" as any });
+      }
     } else {
       setError(result.error || "Login gagal");
       setIsLoading(false);

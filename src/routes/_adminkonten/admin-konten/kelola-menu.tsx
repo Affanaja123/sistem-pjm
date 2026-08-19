@@ -7,15 +7,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Save, Loader2, Menu as MenuIcon, Plus, Trash2, AlertCircle } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
 import { toast } from "sonner";
-import { 
-  AlertDialog, 
-  AlertDialogAction, 
-  AlertDialogCancel, 
-  AlertDialogContent, 
-  AlertDialogDescription, 
-  AlertDialogFooter, 
-  AlertDialogHeader, 
-  AlertDialogTitle 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
@@ -70,13 +70,14 @@ function AdminKelolaMenu() {
       id: 'temp_' + Date.now(),
       label: 'Menu Baru',
       to: '/admin-konten/menu-baru',
+      icon: 'FileText',
       is_system: 0,
       subItems: []
     };
     setMenus([...menus, newMenu]);
 
     toast.success("Menu baru berhasil ditambahkan!", {
-      description: "Silakan gulir ke bawah untuk mengisi nama menu utama.",
+      description: "Silakan isi nama menu utama lalu klik Simpan.",
     });
 
     setTimeout(() => {
@@ -103,6 +104,7 @@ function AdminKelolaMenu() {
       id: 'temp_sub_' + Date.now(),
       label: 'Sub Menu Baru',
       to: '/admin-konten/sub-baru',
+      icon: 'FileText',
       is_system: 0
     });
     setMenus(updated);
@@ -122,32 +124,80 @@ function AdminKelolaMenu() {
     setDeleteModalOpen(true);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!deleteTarget) return;
 
+    let targetId: any = null;
+
     if (deleteTarget.type === 'parent') {
-      const updated = menus.filter((_, i) => i !== deleteTarget.pIndex);
-      setMenus(updated);
-      toast.success("Menu utama berhasil dihapus.");
+      const targetMenu = menus[deleteTarget.pIndex];
+      targetId = targetMenu._id || targetMenu.id;
     } else if (deleteTarget.type === 'sub' && deleteTarget.sIndex !== undefined) {
-      const updated = [...menus];
-      updated[deleteTarget.pIndex].subItems = updated[deleteTarget.pIndex].subItems.filter((_: any, i: number) => i !== deleteTarget.sIndex);
-      setMenus(updated);
-      toast.success("Sub-menu berhasil dihapus.");
+      const targetSub = menus[deleteTarget.pIndex].subItems[deleteTarget.sIndex];
+      targetId = targetSub._id || targetSub.id;
     }
 
     setDeleteModalOpen(false);
     setDeleteTarget(null);
+
+    if (targetId && !String(targetId).startsWith('temp_')) {
+      try {
+        await fetch(`${API_BASE_URL}/api/delete_menus.php?id=${targetId}`, { method: 'DELETE' });
+        await fetch(`${API_BASE_URL}/api/content/cms-menus/${targetId}`, { method: 'DELETE' });
+        
+        toast.success("Menu berhasil dihapus dari database!", {
+          description: "Memuat ulang halaman...",
+        });
+
+        // Otomatis reload halaman agar perubahan langsung diterapkan secara total
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      } catch (err) {
+        console.error("Gagal menghapus menu di server:", err);
+        toast.error("Gagal menghapus permanen dari database server.");
+      }
+    } else {
+      // Jika itu menu baru yang belum disimpan ke database, cukup hapus dari state lokal
+      if (deleteTarget.type === 'parent') {
+        setMenus(menus.filter((_, i) => i !== deleteTarget.pIndex));
+      } else if (deleteTarget.type === 'sub' && deleteTarget.sIndex !== undefined) {
+        const updated = [...menus];
+        updated[deleteTarget.pIndex].subItems = updated[deleteTarget.pIndex].subItems.filter((_: any, i: number) => i !== deleteTarget.sIndex);
+        setMenus(updated);
+      }
+      toast.success("Menu berhasil dihapus.");
+    }
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
+      // Pertahankan ID asli dari database jika ada, jangan di-null-kan jika itu bukan menu baru (temp)
+      const cleanMenus = menus.map((menu: any, index: number) => ({
+        id: menu.id, // Pertahankan id aslinya (misal: 1, 2, 17, dll)
+        _id: menu._id, // Pertahankan ObjectId mongo jika ada
+        urutan: index + 1,
+        label: menu.label || 'Menu Tanpa Nama',
+        to: menu.to || '/admin-konten',
+        icon: menu.icon || 'FileText',
+        is_system: menu.is_system ? 1 : 0,
+        subItems: Array.isArray(menu.subItems) ? menu.subItems.map((sub: any, subIndex: number) => ({
+          id: sub.id, // Pertahankan id sub-menu asli
+          _id: sub._id,
+          urutan: subIndex + 1,
+          label: sub.label || 'Sub Menu Tanpa Nama',
+          to: sub.to || '/admin-konten',
+          icon: sub.icon || 'FileText',
+          is_system: sub.is_system ? 1 : 0
+        })) : []
+      }));
+
       const res = await fetch(`${API_BASE_URL}/api/save_menus.php`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          menus, 
+          menus: cleanMenus, 
           hak_akses: currentUser?.hak_akses || '' 
         })
       });
@@ -179,12 +229,12 @@ function AdminKelolaMenu() {
         <div className="space-y-1">
           <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 tracking-tight">Kelola Menu & Navbar</h1>
           <p className="text-slate-500 text-xs sm:text-sm">
-            {isSuper 
-              ? "Tambah, ubah, atau hapus menu utama dan sub-menu sesuai kebutuhan." 
+            {isSuper
+              ? "Tambah, ubah, atau hapus menu utama dan sub-menu sesuai kebutuhan."
               : "Anda dapat mengubah nama menu yang sesuai dengan hak akses Anda saja."}
           </p>
         </div>
-        
+
         {/* Tombol Aksi Utama (Full width di HP, sejajar di layar besar) */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
           {isSuper && (
@@ -192,9 +242,9 @@ function AdminKelolaMenu() {
               <Plus className="mr-1.5 h-4 w-4" /> Tambah Menu
             </Button>
           )}
-          <Button 
-            onClick={handleSave} 
-            disabled={saving} 
+          <Button
+            onClick={handleSave}
+            disabled={saving}
             className="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm h-10 shadow-sm rounded-xl"
           >
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
@@ -222,9 +272,9 @@ function AdminKelolaMenu() {
                     </span>
                   ) : (
                     isSuper && (
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => promptDeleteParentMenu(pIndex)}
                         className="text-red-600 hover:text-red-700 hover:bg-red-50 h-8 px-2 text-xs rounded-lg"
                       >
@@ -251,9 +301,9 @@ function AdminKelolaMenu() {
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                     <Label className="text-[11px] sm:text-xs font-semibold text-slate-600">Sub-Menu di dalam kategori ini:</Label>
                     {isSuper && (
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => handleAddSubMenu(pIndex)}
                         className="w-full sm:w-auto h-7 text-[11px] px-2.5 text-slate-700 rounded-lg"
                       >
@@ -274,7 +324,7 @@ function AdminKelolaMenu() {
                               Sub-Menu {sIndex + 1}
                             </Label>
                             {sub.is_system != 1 && isSuper && (
-                              <button 
+                              <button
                                 onClick={() => promptDeleteSubMenu(pIndex, sIndex)}
                                 className="text-red-500 hover:text-red-700 text-[10px] font-medium flex items-center py-0.5 px-1 rounded transition-colors"
                                 type="button"
@@ -310,14 +360,14 @@ function AdminKelolaMenu() {
               Konfirmasi Penghapusan
             </AlertDialogTitle>
             <AlertDialogDescription className="text-xs sm:text-sm">
-              {deleteTarget?.type === 'parent' 
-                ? "Apakah Anda yakin ingin menghapus menu utama ini beserta seluruh sub-menunya? Tindakan ini tidak dapat dibatalkan." 
+              {deleteTarget?.type === 'parent'
+                ? "Apakah Anda yakin ingin menghapus menu utama ini beserta seluruh sub-menunya? Tindakan ini tidak dapat dibatalkan."
                 : "Apakah Anda yakin ingin menghapus sub-menu ini?"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col sm:flex-row gap-2">
             <AlertDialogCancel className="w-full sm:w-auto rounded-xl m-0">Batal</AlertDialogCancel>
-            <AlertDialogAction 
+            <AlertDialogAction
               onClick={confirmDelete}
               className="w-full sm:w-auto bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-xl m-0"
             >

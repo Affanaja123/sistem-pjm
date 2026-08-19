@@ -249,5 +249,7 @@ router.post('/:module', upload.any(), contentController.createOrUpdate);
 router.put('/:module/:id', contentController.createOrUpdate);
 router.delete('/:module/:id', contentController.remove);
 router.delete('/content/:module/:id', contentController.remove);
+// router.post('/save_menus.php', contentController.saveMenus);
+// atau sesuaikan dengan mapping rute Express Anda
 
 module.exports = router;
